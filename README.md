@@ -30,7 +30,7 @@ As a starting guess for the gradient descent method, we choose two signed distan
 
 The approach is inspired by Chung, E. T., Chan, T. F., and Tai, X.-C., “Electrical impedance tomography using level set representation and total variational regularization”, <i>Journal of Computational Physics</i>, vol. 205, no. 1, pp. 357–372, 2005. doi:10.1016/j.jcp.2004.11.022.
 
-The difference between this and CUQI7 is a choice of smoothness parameter in the reinitialization of the level set functions. In addition, smaller step sizes have been chosen.
+The difference between this and CUQI7 is a choice of smoothness parameter in the reinitialization of the level set functions. In addition, smaller step sizes have been chosen. Finally, $\beta$ is chosen differently for each level of difficulty.
 
 ## Installation instructions
 To run our EIT image reconstruction algorithm, you will need:
