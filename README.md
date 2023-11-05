@@ -28,6 +28,10 @@ $$\frac{\partial d}{\partial t} + \mathrm{sign}(d)(|\nabla d|-1)=0, \quad d(x,0)
 for $i=1,2$. This is done by completing a Runge-Kutta-4 step $50$ times. 
 As a starting guess for the gradient descent method, we choose two signed distance functions $\phi_1$ and $\phi_2$ that gives rise to a segmented $q$ as reconstructed by the method in [this approach](https://github.com/CUQI-DTU/KTC2023-CUQI1). If the level set method does not manage to improve the loss for the initial guess, this guess is converted to the final segmented solution.
 
+The approach is inspired by Chung, E. T., Chan, T. F., and Tai, X.-C., “Electrical impedance tomography using level set representation and total variational regularization”, <i>Journal of Computational Physics</i>, vol. 205, no. 1, pp. 357–372, 2005. doi:10.1016/j.jcp.2004.11.022.
+
+The difference between this and CUQI7 is a choice of smoothness parameter in the reinitialization of the level set functions. In addition, smaller step sizes have been chosen.
+
 ## Installation instructions
 To run our EIT image reconstruction algorithm, you will need:
 
