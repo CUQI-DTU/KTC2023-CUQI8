@@ -49,9 +49,6 @@ python main.py path/to/input/files path/to/output/files difficulty
 |  Phantom 	|  Ref	| Level 1 	|
 |----------	|-----	|---	|
 |**a**| ![](results/01.png)	| ![](results/11.png)	|   
-|**b**| ![](results/02.png)	| ![](results/12.png)	|  
-|**c**| ![](results/03.png)	| ![](results/13.png)	|  
-|**d**| ![](results/04.png)	| ![](results/14.png)	|
 
 
 ## License
