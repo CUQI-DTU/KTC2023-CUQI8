@@ -1,0 +1,14 @@
+name: env
+channels:
+   - conda-forge
+dependencies:
+   - python=3.10
+   - fenics
+   - pip
+   - pip:
+   # works for regular pip packages
+     - numpy
+     - scipy
+     - matplotlib
+     - scikit-fmm
+     - scikit-image

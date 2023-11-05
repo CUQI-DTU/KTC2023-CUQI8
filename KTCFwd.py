@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+import os.path
 from KTCMeshing import ELEMENT
 
 class CMATRIX:# Compact presentation of a very sparse matrix
@@ -13,8 +14,9 @@ class CMATRIX:# Compact presentation of a very sparse matrix
         
 
 class EITFEM:
-    def __init__(self, Mesh2, Inj, Mpat=None, vincl=None, sigmamin=None, sigmamax=None):
+    def __init__(self, Mesh2, Mesh, Inj, Mpat=None, vincl=None, sigmamin=None, sigmamax=None):
         self.Mesh2 = Mesh2
+        self.Mesh = Mesh
         self.Inj = Inj
         self.Mpat = Mpat
         self.sigmamin = sigmamin if sigmamin is not None else 1e-9
@@ -31,6 +33,12 @@ class EITFEM:
 
         self.dA = None
         self.C = np.matrix(np.vstack((np.ones((1, self.Nel-1)), -np.eye(self.Nel-1))))
+        self.S0 = None
+        self.Agrad = None
+        self.b = None
+        self.QC = None
+        self.noisematrix = None # noise matrix (weights in data term norm)
+        self.Uref = None
 
     def SolveForward(self, sigma, z):
         # Forward solution function - solves the potential field and
@@ -50,6 +58,7 @@ class EITFEM:
         Arow = np.zeros((6 * HN, 6), dtype=np.uint32)
         Acol = np.zeros((6 * HN, 6), dtype=np.uint32)
         Aval = np.zeros((6 * HN, 6))
+        print("Building A0")
         for ii in range(HN):  # Go through all triangles
             ind = self.Mesh2.H[ii, :]
             gg = self.Mesh2.g[ind, :]
@@ -107,7 +116,7 @@ class EITFEM:
 
         self.A = A0 + S0
         self.b = np.concatenate((np.zeros((self.ng2, self.Inj.shape[1])), self.C.T * self.Inj), axis=0)  # RHS vector
-        UU = sp.sparse.linalg.spsolve(self.A, self.b)  # Solve the FEM system of equations
+        UU = sp.sparse.linalg.spsolve(self.A, self.b, use_umfpack = True)  # Solve the FEM system of equations
         self.theta = UU  # FEM solution vectors for each current injection
         self.Pot = UU[0:self.ng2, :]  # The electric potential field for each current injection
         self.Imeas = self.Inj  # Injected currents
@@ -118,9 +127,130 @@ class EITFEM:
 
         return fsol
 
+
+    def SolveForward2(self, sigma, z):
+        # Forward solution function - solves the potential field and
+        # measured voltages given conductivity sigma and contact impedances
+        # z
+
+        # Project negative / too small sigma values to a given minimum
+        # Project too high sigma values to a given maximum
+        sigma[sigma < self.sigmamin] = self.sigmamin
+        sigma[sigma > self.sigmamax] = self.sigmamax
+        z[z < self.zmin] = self.zmin
+
+        # We iterate in a naive way over each node in first order mesh self.Mesh
+        gN = max(np.shape(self.Mesh2.Node))
+        gNN = max(np.shape(self.Mesh.Node))
+        N_total = self.ng2+self.Nel-1
+        HN = max(np.shape(self.Mesh2.H))  # number of elements
+
+        # Initialize
+        if self.Agrad is None and (not os.path.isfile('app/Agrad.npz')):
+            print("Building Agrad")
+            self.Agrad = sp.sparse.lil_matrix((N_total*N_total, gNN))
+            
+            for kk in range(gNN):
+                sigma_delta = np.zeros((gNN,))
+                sigma_delta[kk] = 1
+                k = 1
+                Arow = np.zeros((6 * HN, 6), dtype=np.uint32)
+                Acol = np.zeros((6 * HN, 6), dtype=np.uint32)
+                Aval = np.zeros((6 * HN, 6))
+
+                # Go through relevant triangles, find ii
+                relevant_triangles = np.where(self.Mesh.H == kk)[0]
+
+
+                for ii in relevant_triangles:  # Go through all triangles
+                    ind = self.Mesh2.H[ii, :]
+                    gg = self.Mesh2.g[ind, :]
+                    ss = sigma_delta[ind[[0, 2, 4]]]
+                    int = self.grinprod_gauss_quad_node(gg, ss)
+                    
+                    Inds1 = np.tile(ind, (6, 1))
+                    Acol[k-1:k+5, :] = Inds1
+                    ind = ind.T
+
+                    Inds2 = Inds1.T
+                    Arow[k-1:k+5, :] = Inds2
+                    Aval[k-1:k+5, :] = int
+                    k = k + 6
+                A0 = sp.sparse.csr_matrix((Aval.flatten(), (Arow.flatten(), Acol.flatten())), shape=(N_total, N_total))
+                self.Agrad[:,kk] = A0.reshape((N_total*N_total,1))
+                print(kk)
+            sp.sparse.save_npz("app/Agrad.npz", self.Agrad)
+        elif self.Agrad is None and os.path.isfile('app/Agrad.npz'):
+            print("Loading Agrad")
+            self.Agrad = sp.sparse.load_npz("app/Agrad.npz")
+
+
+        A = self.Agrad * sigma
+        A = A.reshape((N_total,N_total))
+        #A0 = sp.sparse.csr_matrix((Aval.flatten(), (Arow.flatten(), Acol.flatten())), shape=(self.ng2+self.Nel-1, self.ng2+self.Nel-1))
+
+        # Compute the rest of the FEM matrix
+        if self.S0 is None:
+            M = sp.sparse.csr_matrix((gN, self.Nel))
+            self.K = sp.sparse.csr_matrix((gN, gN))
+            s = np.zeros((self.Nel, 1))
+            g = self.Mesh2.g  # Nodes
+            for ii in range(HN):
+                # Go through all triangles
+                ind = self.Mesh2.Element[ii].Topology  # The indices to g of the ii'th triangle.
+                if self.Mesh2.Element[ii].Electrode:  # Checks if the triangle ii is under an electrode
+                    Ind = self.Mesh2.Element[ii].Electrode[1]
+                    a = g[Ind[0], :]
+                    b = g[Ind[1], :]  # the 2nd order node
+                    c = g[Ind[2], :]
+                    InE = self.Mesh2.Element[ii].Electrode[0]  # Electrode index.
+                    s[InE] = s[InE] + 1 / z[InE] * self.electrlen(np.array([a, c]))  # Assumes straight electrodes.
+                    bb1 = self.bound_quad1(np.array([a, b, c]))
+                    bb2 = self.bound_quad2(np.array([a, b, c]))
+                    for il in range(6):
+                        eind = np.where(self.Mesh2.Element[ii].Topology[il] == self.Mesh2.Element[ii].Electrode[1])[0]
+                        if eind.size != 0:
+                            M[ind[il], InE] = M[ind[il], InE] - 1 / z[InE] * bb1[eind[0]]
+                        for im in range(6):
+                            eind1 = np.where(self.Mesh2.Element[ii].Topology[il] == self.Mesh2.Element[ii].Electrode[1])[0]
+                            eind2 = np.where(self.Mesh2.Element[ii].Topology[im] == self.Mesh2.Element[ii].Electrode[1])[0]
+                            if eind1.size != 0 and eind2.size != 0:
+                                self.K[ind[il], ind[im]] = self.K[ind[il], ind[im]] + 1 / z[InE] * bb2[eind1[0], eind2[0]]
+
+            tS = sp.sparse.csr_matrix(np.diag(s.flatten()))
+            self.S = sp.sparse.csr_matrix(self.C.T * tS * self.C)
+            self.M = M * self.C
+        
+        #S0 = sp.sparse.csr_matrix(np.block([[K.toarray(), M.toarray()], [M.toarray().T, S.toarray()]]))
+        #A0 = A0 + self.K
+
+            self.S0 = sp.sparse.bmat(
+                [
+                [self.K, self.M],
+                [self.M.T, self.S]
+                ])
+            
+
+        self.A = A + self.S0
+        if self.b is None:
+            self.b = np.concatenate((np.zeros((self.ng2, self.Inj.shape[1])), self.C.T * self.Inj), axis=0)  # RHS vector
+        
+        UU = sp.sparse.linalg.spsolve(self.A, self.b, use_umfpack = True)  # Solve the FEM system of equations
+        self.theta = UU  # FEM solution vectors for each current injection
+        self.Pot = UU[0:self.ng2, :]  # The electric potential field for each current injection
+        self.Imeas = self.Inj  # Injected currents
+        self.Umeas = self.Mpat.T * self.C * self.theta[self.ng2:, :]  # Measured voltages between electrodes
+        self.Umeas = self.Umeas.T[self.mincl.T].T
+        if self.QC is None:
+            self.QC = np.block([[np.zeros((np.shape(self.Mpat)[1], self.ng2)), self.Mpat.T @ self.C]])
+        fsol = self.Umeas  # Measured potentials, vectorized
+
+        return fsol
+
     def Jacobian(self, sigma=None, z=None):
-        if sigma is not None and z is not None:
-            self.SolveForward(sigma, z)
+        #if sigma is not None and z is not None:
+        if self.Umeas is None:
+            self.Umeas = self.SolveForward2(sigma, z)
         else:
             if self.theta is None:
                 raise ValueError("Jacobian cannot be computed without first computing a forward solution")
@@ -132,10 +262,12 @@ class EITFEM:
                 temp_elements.append(temp_element)
             self.dA = self.jacob_nodesigma2nd3(self.Mesh2.Node, temp_elements, self.Mesh2.Node, self.Mesh2.Element)
 
+        if self.Uref is None:
+            self.Uref = self.SolveForward2(0*sigma+0.8,z)
         m = len(sigma)
         n = len(self.Umeas)
 
-        Jleft = sp.sparse.linalg.spsolve(self.A.T, self.QC.T)
+        Jleft = sp.sparse.linalg.spsolve(self.A.T, self.QC.T, use_umfpack = True)
         Jright = self.theta
 
         Js = np.zeros((n, m))
@@ -199,6 +331,41 @@ class EITFEM:
             dJt = np.abs(np.linalg.det(Jt))
             G = iJt @ L
             int_sum += w[ii] * (S.T @ sigma) * G.T @ G * dJt
+
+        return int_sum
+
+    #def triangint3gradPre(self, g, k):
+    #    w = np.array([1/6, 1/6, 1/6])
+    #    ip = np.array([[1/2, 0], [1/2, 1/2], [0, 1/2]])
+    #    L = np.array([[-1, 1, 0], [-1, 0, 1]])
+    #    Jt = L @ g
+    #    iJt = np.linalg.inv(Jt)
+    #    dJt = np.abs(np.linalg.det(Jt))
+    #    G = iJt @ L
+    #
+    #    int_sum = 0
+    #    for ii in range(3):
+    #        S = np.array([1 - ip[ii, 0] - ip[ii, 1], ip[ii, 0], ip[ii, 1]])
+    #       
+    #        int_sum += w[ii] * S[k] * G.T @ G
+    #
+    #    return int_sum*dJt
+    
+    def triangint3gradPre(self, g, k):
+        w = np.array([1/6, 1/6, 1/6])
+        ip = np.array([[1/2, 0], [1/2, 1/2], [0, 1/2]])
+
+        int_sum = 0
+        for ii in range(3):
+            S = np.array([1 - ip[ii, 0] - ip[ii, 1], ip[ii, 0], ip[ii, 1]])
+            L = np.array([[4 * (ip[ii, 0] + ip[ii, 1]) - 3, -8 * ip[ii, 0] - 4 * ip[ii, 1] + 4, 4 * ip[ii, 0] - 1, 4 * ip[ii, 1], 0, -4 * ip[ii, 1]],
+                          [4 * (ip[ii, 0] + ip[ii, 1]) - 3, -4 * ip[ii, 0], 0, 4 * ip[ii, 0], 4 * ip[ii, 1] - 1, -8 * ip[ii, 1] - 4 * ip[ii, 0] + 4]])
+            Jt = L @ g
+            iJt = np.linalg.inv(Jt)
+            dJt = np.abs(np.linalg.det(Jt))
+            G = iJt @ L
+            print(G.T @ G * dJt) 
+            #int_sum = int_sum + w[ii] * S[k] * G.T @ G * dJt
 
         return int_sum
 

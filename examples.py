@@ -7,11 +7,11 @@ from skimage.metrics import structural_similarity as ssim
 inclusion_list = [1,2,3,4]
 categories_list = [1,4,7]
 
-folder_ground_truth = "GroundTruths"
-folder_training_data = "TrainingData"
-folder_reconstruction = "Output"
+folder_ground_truth = "/app/GroundTruths"
+folder_training_data = "/app/TrainingData"
+folder_reconstruction = "/app/Output"
 
-folder_output_examples = "results"
+folder_output_examples = "/app/results"
 
 def save_as_image(image_array, name):
     matplotlib.image.imsave(name, image_array, vmin = 0, vmax = 2)
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         category_scores = []
         
         print("Reconstructing category number: " + str(category))
-        os.system("python3 main.py " + folder_training_data + " " + folder_reconstruction + " " + str(category))
+        os.system("python3 /app/main.py " + folder_training_data + " " + folder_reconstruction + " " + str(category))
         # main.main(folder_training_data, folder_reconstruction, category)
         for inclusion in inclusion_list:
             ## Save example image
@@ -67,4 +67,4 @@ if __name__ == "__main__":
         
         score_matrix.append(category_scores)
 
-    np.savetxt(folder_output_examples + "/" + "scores.txt", np.array(score_matrix).T, fmt='%4.3f', delimiter='|')
+    np.savetxt(folder_output_examples + "/" + "scores.txt", np.array(score_matrix).T, fmt='%4.3f')
