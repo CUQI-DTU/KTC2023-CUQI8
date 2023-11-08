@@ -146,7 +146,7 @@ class EITFEM:
         HN = max(np.shape(self.Mesh2.H))  # number of elements
 
         # Initialize
-        if self.Agrad is None and (not os.path.isfile('app/Agrad.npz')):
+        if self.Agrad is None and (not os.path.isfile('Agrad.npz')):
             print("Building Agrad")
             self.Agrad = sp.sparse.lil_matrix((N_total*N_total, gNN))
             
@@ -179,10 +179,10 @@ class EITFEM:
                 A0 = sp.sparse.csr_matrix((Aval.flatten(), (Arow.flatten(), Acol.flatten())), shape=(N_total, N_total))
                 self.Agrad[:,kk] = A0.reshape((N_total*N_total,1))
                 print(kk)
-            sp.sparse.save_npz("app/Agrad.npz", self.Agrad)
-        elif self.Agrad is None and os.path.isfile('app/Agrad.npz'):
+            sp.sparse.save_npz("Agrad.npz", self.Agrad)
+        elif self.Agrad is None and os.path.isfile('Agrad.npz'):
             print("Loading Agrad")
-            self.Agrad = sp.sparse.load_npz("app/Agrad.npz")
+            self.Agrad = sp.sparse.load_npz("Agrad.npz")
 
 
         A = self.Agrad * sigma

@@ -7,10 +7,15 @@ import KTCMeshing
 import KTCScoring
 import KTCRegularization
 import KTCAux
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import glob
 import dolfin as df
 from skimage.segmentation import chan_vese
+
+import matplotlib.image
+import os
+from skimage.metrics import structural_similarity as ssim
+import copy
 
 df.set_log_level(40)
 
@@ -28,7 +33,7 @@ def main():
 
     Nel = 32  # number of electrodes
     z = (1e-6) * np.ones((Nel, 1))  # contact impedances
-    mat_dict = sp.io.loadmat('app/TrainingData'+ '/ref.mat') #load the reference data
+    mat_dict = sp.io.loadmat('TrainingData'+ '/ref.mat') #load the reference data
     Injref = mat_dict["Injref"] #current injections
     Uelref = mat_dict["Uelref"] #measured voltages from water chamber
     Mpat = mat_dict["Mpat"] #voltage measurement pattern
@@ -44,7 +49,7 @@ def main():
             vincl[jj,:] = 0
 
     # load premade finite element mesh (made using Gmsh, exported to Matlab and saved into a .mat file)
-    mat_dict_mesh = sp.io.loadmat('app/Mesh_sparse.mat')
+    mat_dict_mesh = sp.io.loadmat('Mesh_sparse.mat')
     g = mat_dict_mesh['g'] #node coordinates
     H = mat_dict_mesh['H'] #indices of nodes making up the triangular elements
     elfaces = mat_dict_mesh['elfaces'][0].tolist() #indices of nodes making up the boundary electrodes
@@ -159,10 +164,7 @@ def main():
     # set up the forward solver for inversion
     solver = KTCFwd.EITFEM(Mesh2, Mesh, Injref, Mpat, vincl)
 
-    # Initialize solver and jacobian and reference data
-    q0 = 0.8 + 0*g[:,0]
-    Uel_sim = solver.SolveForward2(q0, z)
-    JJ = solver.Jacobian(0.8+0*q0,z)
+
 
     vincl = vincl.T.flatten()
 
@@ -178,6 +180,11 @@ def main():
     ### Start for loop here ###
     ###########################
     for objectno in range (0,len(mat_files)):
+
+        # Initialize solver and jacobian and reference data
+        q0 = 0.8 + 0*g[:,0]
+        Uel_sim = solver.SolveForward2(q0, z)
+        JJ = solver.Jacobian(0.8+0*q0,z)
 
         mat_dict2 = sp.io.loadmat(mat_files[objectno])
         Inj = mat_dict2["Inj"]
@@ -243,31 +250,33 @@ def main():
                 deltareco_pixgrid_segmented[region_mask] = 2
 
 
-        reconstruction = deltareco_pixgrid_segmented
+        reconstruction_lin_solve = deltareco_pixgrid_segmented
 
+        
         ## This reconstruction we use for a starting guess
-        phi1_seg = 1.0 - 2.0*(reconstruction == 1)
-        phi2_seg = 1.0 - 2.0*(reconstruction == 2) 
+        phi1_seg = 1.0 - 2.0*(reconstruction_lin_solve == 1)
+        phi2_seg = 1.0 - 2.0*(reconstruction_lin_solve == 2) 
 
         if np.sum(1.0*(phi1_seg < 0)):
-            phi10 = np.flipud(skfmm.distance(phi1_seg, dx = 0.002)).reshape((256**2,1))
+            phi10 = np.flipud(skfmm.distance(phi1_seg, dx = 0.005)).reshape((256**2,1))
         else:
             pixwidth = 0.23 / 256
             pixcenter_x = np.linspace(-0.115 + pixwidth / 2, 0.115 - pixwidth / 2 + pixwidth, 256)
             pixcenter_y = pixcenter_x
             X, Y = np.meshgrid(pixcenter_x, pixcenter_y)
-            phi10 = (X + 2).reshape((256**2,1))
+            phi10 = (X + 10).reshape((256**2,1))
 
         if np.sum(1.0*(phi2_seg < 0)):
-            phi20 = np.flipud(skfmm.distance(phi2_seg, dx = 0.002)).reshape((256**2,1))
+            phi20 = np.flipud(skfmm.distance(phi2_seg, dx = 0.005)).reshape((256**2,1))
         else:
             pixwidth = 0.23 / 256
             pixcenter_x = np.linspace(-0.115 + pixwidth / 2, 0.115 - pixwidth / 2 + pixwidth, 256)
             pixcenter_y = pixcenter_x
             X, Y = np.meshgrid(pixcenter_x, pixcenter_y)
-            phi20 = (X + 2).reshape((256**2,1))
+            phi20 = (X + 10).reshape((256**2,1))
 
 
+        
         phi1_img_fun = df.Function(V_img)
         phi2_img_fun = df.Function(V_img)
 
@@ -281,20 +290,17 @@ def main():
         phi2_fun = df.interpolate(phi2_img_fun,V1)
 
         # Extract vector of values in the right order
-        phi10 = phi1_fun.vector().get_local()[idx2]
-        phi20 = phi2_fun.vector().get_local()[idx2] 
+        phi10_vec = phi1_fun.vector().get_local()[idx2]
+        phi20_vec = phi2_fun.vector().get_local()[idx2] 
 
         # First decide whether we should try both q2 = 5 and q2 = 10:
-        step_size_vec = [0.1,0.1,0.1,0.1,0.1,0.1,0.1]
-        alpha_dif_vec = [1e-3, 1e-3, 9.5*1e-4, 9.5*1e-4, 9.5*1e-4, 9*1e-4, 9*1e-4]
-        beta_vec = [9e-6, 9e-6, 8.5*1e-6, 8.5*1e-6, 8.5*1e-6, 8*1e-6, 8*1e-6]
-
+        step_size_vec = [0.08,0.08,0.1,0.1,0.12,0.12,0.15]
+        beta_vec = [2e-6, 1.8*1e-6, 1.5e-6, 1*1e-6, 9*1e-7, 8*1e-7, 7*1e-7]
         idx_step_size = int(categoryNbr-1)
         step_size = step_size_vec[idx_step_size]
-        alpha_dif_cat = alpha_dif_vec[idx_step_size]
-        beta_cat = beta_vec[idx_step_size]
+        beta_idx = beta_vec[idx_step_size]
 
-        if np.sum(reconstruction==2) >0:
+        if np.sum(reconstruction_lin_solve==2) >0:
             FLAG5 = 1
             FLAG10 = 1
             stepsize_counter = 0
@@ -303,7 +309,7 @@ def main():
             while(FLAG10 == 1):
                 print("Trying q2 = 10 with initial step_size =",step_size)
                 q2 = 10
-                phi1_new10, phi2_new10, F10, FLAG10 = level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,alpha_dif_cat,beta_cat)
+                phi1_new10, phi2_new10, F10, FLAG10 = level_set(phi10_vec,phi20_vec,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,beta_idx)
                 step_size = 0.5*step_size
                 stepsize_counter = stepsize_counter + 1
                 if stepsize_counter == 5:
@@ -311,11 +317,11 @@ def main():
             
             stepsize_counter = 0
             step_size = step_size_vec[idx_step_size]
-            # Try with q2 = 5
+            # Try with q2 = 2
             while(FLAG5 == 1):
-                print("Trying q2 = 5 with initial step_size =",step_size)
-                q2 = 5
-                phi1_new5, phi2_new5, F5, FLAG5 = level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,alpha_dif_cat,beta_cat)
+                print("Trying q2 = 2 with initial step_size =",step_size)
+                q2 = 2
+                phi1_new5, phi2_new5, F5, FLAG5 = level_set(phi10_vec,phi20_vec,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,beta_idx)
                 step_size = 0.5*step_size
                 stepsize_counter = stepsize_counter + 1
                 if stepsize_counter == 5:
@@ -335,8 +341,8 @@ def main():
                 phi1 = phi1_new5
                 phi2 = phi2_new5
             else:
-                phi1 = phi10
-                phi2 = phi20
+                phi1 = phi10_vec
+                phi2 = phi20_vec
 
         else:
             FLAG = 1
@@ -345,7 +351,7 @@ def main():
             q2 = 10
             while(FLAG == 1):
                 print("Trying with initial step_size =",step_size)
-                phi1_new, phi2_new, F, FLAG = level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,alpha_dif_cat,beta_cat)
+                phi1_new, phi2_new, F, FLAG = level_set(phi10_vec,phi20_vec,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,beta_idx)
                 step_size = 0.5*step_size
                 stepsize_counter = stepsize_counter + 1
                 if stepsize_counter == 5:
@@ -354,22 +360,25 @@ def main():
                 phi1 = phi1_new
                 phi2 = phi2_new
             else:
-                phi1 = phi10
-                phi2 = phi20
+                phi1 = phi10_vec
+                phi2 = phi20_vec
+
 
         # Reinitialization parameters
-        alpha_dif = 9*1e-4 # diffusion parameter
+        alpha_dif = 7*1e-4 # diffusion parameter
         dt = 1.5*1e-4
-        Ninit = 50
+        Ninit = 5
         eps = 1e-3
-        kappa = -1.5*1e-3
+        kappa = -4*1e-3
 
         phi1re = reinitRK(phi1,idx,Ninit,dt,eps,alpha_dif,V1).vector().get_local()[idx2]
         phi2re = reinitRK(phi2,idx,Ninit,dt,eps,alpha_dif,V1).vector().get_local()[idx2]
 
         phi1_grid = KTCAux.interpolateRecoToPixGrid(phi1re, Mesh)
         phi2_grid = KTCAux.interpolateRecoToPixGrid(phi2re, Mesh)
-        reconstruction = 0*((phi1_grid>kappa)*(phi2_grid>kappa)) + 2*((phi1_grid>kappa)*(phi2_grid<kappa)) + 1*((phi1_grid<kappa)*(phi2_grid>kappa)) + 1*((phi1_grid<kappa)*(phi2_grid<kappa))
+        #phi1_grid = KTCAux.interpolateRecoToPixGrid(phi10, Mesh)
+        #phi2_grid = KTCAux.interpolateRecoToPixGrid(phi20, Mesh)
+        reconstruction = 0*((phi1_grid>kappa)*(phi2_grid>kappa)) + 2*((phi1_grid>kappa)*(phi2_grid<kappa)) + 1*((phi1_grid<kappa)*(phi2_grid>kappa)) + 0*((phi1_grid<kappa)*(phi2_grid<kappa))
   
         mdic = {"reconstruction": reconstruction}
         print(outputFolder + '/' + str(objectno + 1) + '.mat')
@@ -600,21 +609,26 @@ def reinitRK(l,idx,Niter,dt,eps,alpha,V1):
     return phi0
 
 
-def level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,alpha_dif_cat,beta_cat):
+def level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,idx2,beta_idx):
     # Initialize level set function
-    phi1k = phi10
-    phi1 = phi1k
-    phi2k = phi20
-    phi2 = phi2k
 
+    #phi10copy = copy.deepcopy(phi10)
+    #phi20copy = copy.deepcopy(phi20)
+    phi1k = copy.deepcopy(phi10)
+    phi2k = copy.deepcopy(phi20)
+
+    phi1 = phi1k.copy()
+    phi2 = phi2k.copy()
+
+    
     q1 = 0.8
     q3 = 0.01
-    q4 = 0.01
+    q4 = 0.8
 
     # Starting guess becomes this:
     q = q1*((phi1k>0)*(phi2k>0)) + q2*((phi1k>0)*(phi2k<=0)) + q3*((phi1k<=0)*(phi2k>0)) + q4*((phi1k<=0)*(phi2k<=0))
-    qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 2*((phi1k<=0)*(phi2k<=0))
-    q0 = q
+    qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 0*((phi1k<=0)*(phi2k<=0))
+    #q0 = q.copy()
 
     # We cast it as an CG1 function
     qfun = df.Function(V1)
@@ -622,31 +636,31 @@ def level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,id
     qfun.vector().set_local(q[idx])
     qfuntv.vector().set_local(qtv[idx])
 
+    
 
     # Slice data corresponding to difficulty level
     Umeas = Uel[vincl]
     Umeas_ref = Uelref[vincl]
 
     # Reinitialization parameters
-    #alpha_dif = 9*1e-4 # diffusion parameter
-    alpha_dif = alpha_dif_cat
-    dt = 1.5*1e-4
-    Ninit = 50
+    alpha_dif = 8*1e-4 # diffusion parameter
+    dt = 1*1e-4
+    Ninit = 35
 
     # TV Regularization parameter
+    beta = beta_idx
     #beta = 8e-6
-    beta = beta_cat
-    zeta = 2
+    zeta = 30
 
     # TV Smoothness parameter in lagged diffusion (should be around average length of element)
-    delta = 1e-3
+    delta = 1e-2
 
     # Smoothness parameter for delta approximation and sign function in reinitializationi (should be small)
     eps = 1e-3
     # Step size
     alpha = step_size
     # Number of iterations
-    Miter = 200
+    Miter = 400
 
     # Backtracking line search
     #tau = 0.5
@@ -654,54 +668,57 @@ def level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,id
 
     # Initialize Total variation object
     TV = MyTV(qfuntv,V02,V1,delta,idx2)
-
+    
     # Initial functional value
     F0 = compute_functional3(q,solver,Umeas,Umeas_ref,z,beta,idx,qtv,TV,zeta,D,V1)
 
+    F_best = F0
     time_since_last1 = 0
     time_since_last2 = 0
-
+    
+    
     # Iterate!
-    phi1_best = 0
-    phi2_best = 0
-
+    phi1_best = phi1k.copy()
+    phi2_best = phi2k.copy()
+    
     j = 0
     for i in range(Miter):
 
         # Take step in phi1 direction
         dFdq, disp = find_direction3_dFdq(q,solver,Umeas,Umeas_ref,z,beta,idx,qtv,TV,eps,zeta,D,V1)
         dqdphi1,dqdphi2 = find_direction_dqdphi(phi1k,phi2k,q1,q2,q3,q4,eps)
-        phi1k = phi1k - alpha * (dFdq*dqdphi1)
+        #phi1k = phi1k - alpha * (dFdq*dqdphi1)
         # Form q 
-        q = q1*((phi1k>0)*(phi2k>0)) + q2*((phi1k>0)*(phi2k<=0)) + q3*((phi1k<=0)*(phi2k>0)) + q4*((phi1k<=0)*(phi2k<=0))
-        qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 2*((phi1k<=0)*(phi2k<=0))
+        #q = q1*((phi1k>0)*(phi2k>0)) + q2*((phi1k>0)*(phi2k<=0)) + q3*((phi1k<=0)*(phi2k>0)) + q4*((phi1k<=0)*(phi2k<=0))
+        #qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 0*((phi1k<=0)*(phi2k<=0))
 
         # Take step in phi2 direction
-        dFdq, disp = find_direction3_dFdq(q,solver,Umeas,Umeas_ref,z,beta,idx,qtv,TV,eps,zeta,D,V1)
-        dqdphi1,dqdphi2 = find_direction_dqdphi(phi1k,phi2k,q1,q2,q3,q4,eps)
+        #dFdq, disp = find_direction3_dFdq(q,solver,Umeas,Umeas_ref,z,beta,idx,qtv,TV,eps,zeta,D,V1)
+        #dqdphi1,dqdphi2 = find_direction_dqdphi(phi1k,phi2k,q1,q2,q3,q4,eps)
         phi2k = phi2k - alpha * (dFdq*dqdphi2)
+        phi1k = phi1k - alpha * (dFdq*dqdphi1)
+
         # Form q 
         q = q1*((phi1k>0)*(phi2k>0)) + q2*((phi1k>0)*(phi2k<=0)) + q3*((phi1k<=0)*(phi2k>0)) + q4*((phi1k<=0)*(phi2k<=0))
-        qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 2*((phi1k<=0)*(phi2k<=0))
+        qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 0*((phi1k<=0)*(phi2k<=0))
 
 
         qfun.vector().set_local(q[idx])
         qfuntv.vector().set_local(qtv[idx])
         F = compute_functional3_given_disp(disp,q,solver,Umeas,Umeas_ref,beta,idx,qtv,TV,zeta,D,V1)
-
+        print("F = ", F)
         # In case initial stepsize was too high
-        if F>F0:
+        if F>F0*1.05:
             #print(F)
-            #print(F0)
             FLAG = 1
-            return phi1k, phi2k, F, FLAG
+            return phi10, phi20, F, FLAG
         
-        if i == 5:
-            alpha = alpha/2
-            print("Updating stepsize =", alpha)
-        if i == 20:
-            alpha = alpha/2
-            print("Updating stepsize =", alpha)
+        #if i == 5:
+        #    alpha = alpha/2
+        #    print("Updating stepsize =", alpha)
+        #if i == 20:
+        #    alpha = alpha/2
+        #    print("Updating stepsize =", alpha)
         if i == 50:
             alpha = alpha/2 
             print("Updating stepsize =", alpha)
@@ -711,39 +728,45 @@ def level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,id
         if i == 150:
             alpha = alpha/2
             print("Updating stepsize =", alpha)
+        if i == 200:
+            alpha = alpha/2
+            print("Updating stepsize =", alpha)
+        if i == 300:
+            alpha = alpha/2
+            print("Updating stepsize =", alpha)
 
         # Take a step of length alpha in that direction
         print("Iteration =", i, "::: Loss =", F)
 
-        if i == 50:
+        if i == 250:
             phi1_best = phi1k
             phi2_best = phi2k
             F_best = F
             print("Updating best")
 
-        if i > 50 and F < F_best:
+        if i > 250 and F < F_best:
             phi1_best = phi1k
             phi2_best = phi2k
             F_best = F 
             print("Updating best")  
 
         # if phi1 is changed more than 10% we reinitialize and recompute TV object
-        if np.linalg.norm(phi1k-phi1)/np.linalg.norm(phi1) > 0.1 or time_since_last1 >= 10:
+        if np.linalg.norm(phi1k-phi1)/np.linalg.norm(phi1) > 0.1 or time_since_last1 >= 20:
             print("Reinitializing phi1")
             phi1k = reinitRK(phi1k,idx,Ninit,dt,eps,alpha_dif,V1).vector().get_local()[idx2]
             phi1 = phi1k.copy()
             #q = q1*((phi1k>0)*(phi2k>0)) + q2*((phi1k>0)*(phi2k<=0)) + q3*((phi1k<=0)*(phi2k>0)) + q4*((phi1k<=0)*(phi2k<=0))
-            qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 2*((phi1k<=0)*(phi2k<=0))
+            qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 0*((phi1k<=0)*(phi2k<=0))
             qfuntv.vector().set_local(qtv[idx])
             TV.update_op(qfuntv)
             time_since_last1 = 0
 
-        if np.linalg.norm(phi2k-phi2)/np.linalg.norm(phi2) > 0.1 or time_since_last2 >= 10:
+        if np.linalg.norm(phi2k-phi2)/np.linalg.norm(phi2) > 0.1 or time_since_last2 >= 20:
             print("Reinitializing phi2")
             phi2k = reinitRK(phi2k,idx,Ninit,dt,eps,alpha_dif,V1).vector().get_local()[idx2]
             phi2 = phi2k.copy()
             #q = q1*((phi1k>0)*(phi2k>0)) + q2*((phi1k>0)*(phi2k<=0)) + q3*((phi1k<=0)*(phi2k>0)) + q4*((phi1k<=0)*(phi2k<=0))
-            qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 2*((phi1k<=0)*(phi2k<=0))
+            qtv = 0*((phi1k>0)*(phi2k>0)) + 1*((phi1k>0)*(phi2k<=0)) + -1*((phi1k<=0)*(phi2k>0)) + 0*((phi1k<=0)*(phi2k<=0))
             qfuntv.vector().set_local(qtv[idx])
             TV.update_op(qfuntv)
             time_since_last2 = 0
@@ -751,8 +774,46 @@ def level_set(phi10,phi20,q2,step_size,Uelref,Uel,vincl,solver,V1,idx,V02,z,D,id
         
         time_since_last1 += 1
         time_since_last2 += 1
+
+    #phi1_best = phi1k
+    #phi2_best = phi2k
+    #F_best = F
     
     return phi1_best, phi2_best, F_best, 0
+    #return phi10copy, phi20copy, F_best, 0
+    #return phi1_best, phi2_best, F_best, 0
+    
+
+## THIS SHOULD BE REMOVED FOR THE LAST SUBMISSION:
+
+def save_as_image(image_array, name):
+    matplotlib.image.imsave(name, image_array, vmin = 0, vmax = 2)
+
+def load_mat(folder_name, inclusion, ground_truth=False):
+    if ground_truth:
+        key = "truth"
+        path = folder_name + "/" + "true" + str(inclusion) + ".mat"
+    else:
+        key = "reconstruction"
+        path = folder_name + "/" + str(inclusion) + ".mat"
+        
+    return np.array(sp.io.loadmat(path).get(key))
+
+def scoring_function(truth, recon):
+    truth_c = np.zeros((256,256))
+    truth_c[truth == 2] = 1
+    recon_c = np.zeros((256,256))
+    recon_c[recon == 2] = 1
+    s_c = ssim(truth_c, recon_c, data_range = 2.0, gaussian_weights = True,
+          K1 = 1*1e-4, K2 = 9*1e-4, sigma = 80.0, win_size = 255)
+    
+    truth_r = np.zeros((256,256))
+    truth_r[truth == 1] = 1
+    recon_r = np.zeros((256,256))
+    recon_r[recon == 1] = 1
+    s_r = ssim(truth_r, recon_r, data_range = 2.0, gaussian_weights = True,
+          K1 = 1*1e-4, K2 = 9*1e-4, sigma = 80.0, win_size = 255)
+    return 0.5*(s_c+s_r)
 
 
 if __name__ == "__main__":
